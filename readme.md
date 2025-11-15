@@ -72,6 +72,125 @@ A scalable, cloud-native geospatial data processing pipeline for INSAT satellite
 └───────────────────┘
 ```
 
+## 🔄 How It Works
+
+### Workflow Processing Pipeline
+
+The system processes geospatial data through a distributed, event-driven pipeline:
+
+#### 1. **Workflow Submission**
+```
+Client → API (POST /workflows) → Receiver Lambda → SQS Queue
+```
+- User submits workflow with operations (band math, NDVI, custom expressions)
+- API creates job record in DynamoDB with status `QUEUED`
+- Receiver Lambda validates input manifest and queues tasks
+
+#### 2. **Distributed Tile Processing**
+```
+SQS → Processor Lambda (parallel) → S3 (processed tiles)
+```
+- Each tile processed independently by Lambda function
+- Operations applied: band math, filtering, transformations
+- Processed tiles written to S3 with metadata
+- Progress updates written to DynamoDB
+
+**Example**: Processing 100 tiles
+- Lambda concurrency: 10 functions run in parallel
+- Each Lambda processes 10 tiles sequentially
+- Total time: ~30 seconds (vs 5+ minutes sequential)
+
+#### 3. **Mosaic Generation**
+```
+All tiles complete → Translator Lambda → Merge tiles → Final mosaic
+```
+- Triggered when all tiles reach `COMPLETED` status
+- Uses GDAL to merge tiles into single GeoTIFF
+- Applies compression and optimization
+- Updates job status to `COMPLETED`
+
+#### 4. **Visualization & Export**
+```
+Mosaic ready → TiTiler service → Dynamic tiles/crops/previews
+```
+- TiTiler reads mosaic directly from S3
+- Generates tiles on-the-fly for web maps
+- Supports bbox extraction with custom colormaps
+- No pre-processing required
+
+### Real-Time Monitoring
+
+**WebSocket Updates:**
+```javascript
+// Client connects
+ws://api-lb/ws/workflows/{job_id}
+
+// Receives updates
+{
+  "type": "status_update",
+  "data": {
+    "status": "PROCESSING",
+    "tiles_processed": 45,
+    "tiles_total": 100,
+    "progress_percent": 45
+  }
+}
+```
+
+**Status Flow:**
+```
+QUEUED → PROCESSING → MERGING → COMPLETED
+   ↓         ↓           ↓
+FAILED ← FAILED  ← FAILED
+```
+
+### Data Flow Example
+
+**Input:** INSAT-3D satellite data with 4 spectral bands
+```json
+{
+  "tiles": [
+    {"key": "tile_0_0.tif", "bounds": [68, 8, 70, 10]},
+    {"key": "tile_0_1.tif", "bounds": [70, 8, 72, 10]},
+    ...
+  ]
+}
+```
+
+**Processing:** Calculate NDVI index
+```python
+# Processor Lambda
+ndvi = (NIR - RED) / (NIR + RED)
+# Output: tile_0_0_processed.tif
+```
+
+**Output:** Merged mosaic with visualization
+```
+mosaic.tif → TiTiler → XYZ tiles/{z}/{x}/{y}.png
+                     → BBox extraction
+                     → Statistics & metadata
+```
+
+### Key Design Decisions
+
+**1. Why Lambda for Processing?**
+- ✅ Automatic scaling (0-1000+ concurrent executions)
+- ✅ Pay-per-use (no idle container costs)
+- ✅ Built-in retry logic
+- ✅ Handles variable workloads
+
+**2. Why ECS for API/TiTiler?**
+- ✅ Long-running WebSocket connections
+- ✅ Complex dependencies (GDAL, rasterio)
+- ✅ Stateful caching for TiTiler
+- ✅ Service discovery integration
+
+**3. Why COG (Cloud Optimized GeoTIFF)?**
+- ✅ Random access without full download
+- ✅ Internal tiling enables parallel processing
+- ✅ HTTP range requests for efficiency
+- ✅ Industry standard format
+
 ## 🛠️ Installation
 
 ### 1. Clone Repository
@@ -522,9 +641,10 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 ## 📞 Support
 
 For issues, questions, or contributions:
-- Open an issue on GitHub
-- Contact: [your-email@example.com]
-- Documentation: [Link to detailed docs]
+- 📧 Email: bendrevivek0@gmail.com
+- 🐛 Issues: [GitHub Issues](https://github.com/vivek5200/Final-2st-Architecture/issues)
+- 💬 Discussions: [GitHub Discussions](https://github.com/vivek5200/Final-2st-Architecture/discussions)
+- 📖 Documentation: See `SECURITY.md` and `GITHUB_PUSH_CHECKLIST.md`
 
 ---
 
