@@ -1,0 +1,164 @@
+# TiTiler Deployment Script for Existing ALB
+# This script deploys TiTiler to your existing ECS cluster and ALB
+
+$REGION = "YOUR_REGION"
+$CLUSTER_NAME = "YOUR_CLUSTER_NAME"
+$ALB_ARN = "arn:aws:elasticloadbalancing:YOUR_REGION:YOUR_ACCOUNT_ID:loadbalancer/app/YOUR_ALB_NAME/YOUR_ALB_ID"
+$VPC_ID = ""  # Will be fetched
+$SUBNETS = @()  # Will be fetched
+
+Write-Host "=== TiTiler Deployment to Existing Infrastructure ===" -ForegroundColor Cyan
+
+# Step 1: Get VPC and Subnets from existing resources
+Write-Host "`n1. Fetching VPC and subnet information..." -ForegroundColor Yellow
+$vpcInfo = aws ec2 describe-vpcs --region $REGION --filters "Name=tag:Name,Values=*production*" --query "Vpcs[0].VpcId" --output text
+if ($vpcInfo -and $vpcInfo -ne "None") {
+    $VPC_ID = $vpcInfo
+    Write-Host "   Found VPC: $VPC_ID" -ForegroundColor Green
+} else {
+    # Try to get VPC from ALB
+    $albVpc = aws elbv2 describe-load-balancers --region $REGION --load-balancer-arns $ALB_ARN --query "LoadBalancers[0].VpcId" --output text
+    $VPC_ID = $albVpc
+    Write-Host "   Found VPC from ALB: $VPC_ID" -ForegroundColor Green
+}
+
+$subnetList = aws ec2 describe-subnets --region $REGION --filters "Name=vpc-id,Values=$VPC_ID" --query "Subnets[?MapPublicIpOnLaunch==``true``].SubnetId" --output json | ConvertFrom-Json
+$SUBNETS = $subnetList
+
+Write-Host "   Found subnets: $($SUBNETS -join ', ')" -ForegroundColor Green
+
+# Step 2: Create Target Group for TiTiler
+Write-Host "`n2. Creating Target Group for TiTiler..." -ForegroundColor Yellow
+$tgArn = aws elbv2 create-target-group `
+    --name "titiler-tg-production" `
+    --protocol HTTP `
+    --port 8080 `
+    --vpc-id $VPC_ID `
+    --target-type ip `
+    --health-check-enabled `
+    --health-check-path "/healthz" `
+    --health-check-interval-seconds 30 `
+    --health-check-timeout-seconds 5 `
+    --healthy-threshold-count 2 `
+    --unhealthy-threshold-count 3 `
+    --region $REGION `
+    --query "TargetGroups[0].TargetGroupArn" `
+    --output text 2>$null
+
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "   Target group might already exist, fetching existing..." -ForegroundColor Yellow
+    $tgArn = aws elbv2 describe-target-groups --region $REGION --names "titiler-tg-production" --query "TargetGroups[0].TargetGroupArn" --output text
+}
+
+Write-Host "   Target Group ARN: $tgArn" -ForegroundColor Green
+
+# Step 3: Get ALB Listener
+Write-Host "`n3. Getting ALB Listener..." -ForegroundColor Yellow
+$listenerArn = aws elbv2 describe-listeners --region $REGION --load-balancer-arn $ALB_ARN --query "Listeners[?Port==``80``].ListenerArn" --output text
+
+Write-Host "   Listener ARN: $listenerArn" -ForegroundColor Green
+
+# Step 4: Add path-based routing rule for /viz/*
+Write-Host "`n4. Adding ALB routing rule for /viz/* path..." -ForegroundColor Yellow
+
+# Get existing rules to find the next priority
+$existingRules = aws elbv2 describe-rules --region $REGION --listener-arn $listenerArn --query "Rules[].Priority" --output json | ConvertFrom-Json
+$priorities = $existingRules | Where-Object { $_ -ne "default" } | ForEach-Object { [int]$_ }
+$nextPriority = if ($priorities) { ($priorities | Measure-Object -Maximum).Maximum + 1 } else { 1 }
+
+Write-Host "   Using priority: $nextPriority" -ForegroundColor Cyan
+
+$ruleArn = aws elbv2 create-rule `
+    --listener-arn $listenerArn `
+    --priority $nextPriority `
+    --conditions "Field=path-pattern,Values=/viz/*" `
+    --actions "Type=forward,TargetGroupArn=$tgArn" `
+    --region $REGION `
+    --query "Rules[0].RuleArn" `
+    --output text 2>$null
+
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "   Rule created: $ruleArn" -ForegroundColor Green
+} else {
+    Write-Host "   Rule creation failed or already exists" -ForegroundColor Yellow
+}
+
+# Step 5: Get Security Group
+Write-Host "`n5. Finding or creating Security Group..." -ForegroundColor Yellow
+$sgId = aws ec2 describe-security-groups --region $REGION --filters "Name=group-name,Values=titiler-sg-production" "Name=vpc-id,Values=$VPC_ID" --query "SecurityGroups[0].GroupId" --output text
+
+if ($sgId -eq "None" -or -not $sgId) {
+    Write-Host "   Creating new security group..." -ForegroundColor Yellow
+    $sgId = aws ec2 create-security-group `
+        --group-name "titiler-sg-production" `
+        --description "Security group for TiTiler service" `
+        --vpc-id $VPC_ID `
+        --region $REGION `
+        --query "GroupId" `
+        --output text
+    
+    # Add ingress rule
+    aws ec2 authorize-security-group-ingress `
+        --group-id $sgId `
+        --protocol tcp `
+        --port 8080 `
+        --cidr 0.0.0.0/0 `
+        --region $REGION > $null
+    
+    Write-Host "   Created Security Group: $sgId" -ForegroundColor Green
+} else {
+    Write-Host "   Using existing Security Group: $sgId" -ForegroundColor Green
+}
+
+# Step 6: Register Task Definition
+Write-Host "`n6. Registering TiTiler Task Definition..." -ForegroundColor Yellow
+aws ecs register-task-definition --cli-input-json file://ecs-titiler-task-definition.json --region $REGION > $null
+
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "   Task definition registered successfully" -ForegroundColor Green
+} else {
+    Write-Host "   Failed to register task definition" -ForegroundColor Red
+    exit 1
+}
+
+# Step 7: Create ECS Service
+Write-Host "`n7. Creating ECS Service for TiTiler..." -ForegroundColor Yellow
+
+$subnetStr = ($SUBNETS | ForEach-Object { $_ }) -join ','
+
+$serviceExists = aws ecs describe-services --cluster $CLUSTER_NAME --services titiler-service-production --region $REGION --query "services[0].serviceName" --output text 2>$null
+
+if ($serviceExists -eq "titiler-service-production") {
+    Write-Host "   Service already exists, updating..." -ForegroundColor Yellow
+    aws ecs update-service `
+        --cluster $CLUSTER_NAME `
+        --service titiler-service-production `
+        --force-new-deployment `
+        --region $REGION > $null
+    Write-Host "   Service updated and redeploying" -ForegroundColor Green
+} else {
+    aws ecs create-service `
+        --cluster $CLUSTER_NAME `
+        --service-name titiler-service-production `
+        --task-definition titiler-service `
+        --desired-count 1 `
+        --launch-type FARGATE `
+        --network-configuration "awsvpcConfiguration={subnets=[$subnetStr],securityGroups=[$sgId],assignPublicIp=ENABLED}" `
+        --load-balancers "targetGroupArn=$tgArn,containerName=titiler,containerPort=8080" `
+        --region $REGION > $null
+    
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "   Service created successfully" -ForegroundColor Green
+    } else {
+        Write-Host "   Failed to create service" -ForegroundColor Red
+        exit 1
+    }
+}
+
+Write-Host "`n=== Deployment Complete ===" -ForegroundColor Cyan
+Write-Host "`nTiTiler will be available at:" -ForegroundColor Yellow
+Write-Host "  http://YOUR_ALB_DNS_NAME/viz" -ForegroundColor Green
+Write-Host "`nMonitor deployment:" -ForegroundColor Yellow
+Write-Host "  aws ecs describe-services --cluster $CLUSTER_NAME --services titiler-service-production --region $REGION" -ForegroundColor Cyan
+Write-Host "`nCheck logs:" -ForegroundColor Yellow  
+Write-Host "  aws logs tail /ecs/titiler-service --follow --region $REGION" -ForegroundColor Cyan

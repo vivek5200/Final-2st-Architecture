@@ -1,0 +1,64 @@
+{
+  "family": "titiler-service",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "1024",
+  "memory": "2048",
+  "executionRoleArn": "arn:aws:iam::YOUR_ACCOUNT_ID:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::YOUR_ACCOUNT_ID:role/geospatial-task-role",
+  "containerDefinitions": [
+    {
+      "name": "titiler",
+      "image": "ghcr.io/developmentseed/titiler:latest",
+      "portMappings": [
+        {
+          "containerPort": 8080,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        {
+          "name": "AWS_REGION",
+          "value": "YOUR_REGION"
+        },
+        {
+          "name": "GDAL_DISABLE_READDIR_ON_OPEN",
+          "value": "EMPTY_DIR"
+        },
+        {
+          "name": "GDAL_HTTP_MERGE_CONSECUTIVE_RANGES",
+          "value": "YES"
+        },
+        {
+          "name": "GDAL_HTTP_MULTIPLEX",
+          "value": "YES"
+        },
+        {
+          "name": "GDAL_HTTP_VERSION",
+          "value": "2"
+        },
+        {
+          "name": "VSI_CACHE",
+          "value": "TRUE"
+        },
+        {
+          "name": "VSI_CACHE_SIZE",
+          "value": "536870912"
+        },
+        {
+          "name": "CPL_VSIL_CURL_ALLOWED_EXTENSIONS",
+          "value": ".tif,.tiff,.vrt"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/titiler-service",
+          "awslogs-region": "YOUR_REGION",
+          "awslogs-stream-prefix": "ecs",
+          "awslogs-create-group": "true"
+        }
+      }
+    }
+  ]
+}

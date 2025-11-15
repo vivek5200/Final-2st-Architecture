@@ -1,0 +1,14 @@
+fastapi==0.121.1
+uvicorn[standard]==0.38.0
+websockets==14.2
+boto3==1.40.61
+pydantic==2.12.4
+python-dotenv==1.0.1
+rasterio==1.4.3
+numpy==2.0.2
+Pillow==11.3.0
+matplotlib==3.9.4
+aioboto3==15.5.0
+cachetools==6.2.1
+scikit-image==0.24.0
+httpx==0.28.1

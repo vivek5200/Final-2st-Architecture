@@ -1,0 +1,67 @@
+{
+  "family": "geospatial-api",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "1024",
+  "memory": "2048",
+  "executionRoleArn": "arn:aws:iam::YOUR_ACCOUNT_ID:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::YOUR_ACCOUNT_ID:role/geospatial-task-role",
+  "containerDefinitions": [
+    {
+      "name": "api",
+      "image": "YOUR_ACCOUNT_ID.dkr.ecr.YOUR_REGION.amazonaws.com/geospatial-api:latest",
+      "portMappings": [
+        {
+          "containerPort": 80,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        {
+          "name": "AWS_REGION",
+          "value": "YOUR_REGION"
+        },
+        {
+          "name": "ENVIRONMENT",
+          "value": "production"
+        },
+        {
+          "name": "MEMCACHED_ENDPOINT",
+          "value": "your-elasticache-configuration-endpoint:11211"
+        },
+        {
+          "name": "SQS_QUEUE_URL",
+          "value": "https://sqs.YOUR_REGION.amazonaws.com/YOUR_ACCOUNT_ID/workflow-queue"
+        },
+        {
+          "name": "DYNAMODB_TABLE_NAME",
+          "value": "WorkflowJobs"
+        },
+        {
+          "name": "S3_BUCKET_NAME",
+          "value": "insat-cog-processed-production"
+        },
+        {
+          "name": "PROCESSED_BUCKET_NAME",
+          "value": "insat-processed-results-production"
+        },
+        {
+          "name": "TITILER_ENDPOINT",
+          "value": "http://titiler:8080"
+        },
+        {
+          "name": "API_BASE_URL",
+          "value": "http://YOUR_ALB_DNS_NAME"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/geospatial-api",
+          "awslogs-region": "YOUR_REGION",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}
